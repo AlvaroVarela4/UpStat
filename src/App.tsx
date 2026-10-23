@@ -1,122 +1,86 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState, type FormEvent } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { supabase } from './supabase'
 
-function App() {
-  const [count, setCount] = useState(0)
+// Strava solo valida el dominio del redirect; la ruta /strava separa su ?code= del de Supabase Auth.
+const STRAVA_REDIRECT = `${location.origin}/strava`
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+function connectStrava() {
+  const state = crypto.randomUUID()
+  sessionStorage.setItem('strava_state', state)
+  const url = new URL('https://www.strava.com/oauth/authorize')
+  url.search = new URLSearchParams({
+    client_id: import.meta.env.VITE_STRAVA_CLIENT_ID,
+    redirect_uri: STRAVA_REDIRECT,
+    response_type: 'code',
+    approval_prompt: 'auto',
+    scope: 'read,activity:read_all',
+    state,
+  }).toString()
+  location.assign(url)
 }
 
-export default App
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null)
+  const [email, setEmail] = useState('')
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s))
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  // Vuelta de Strava: validar state y scope, y canjear el code en la Edge Function.
+  useEffect(() => {
+    if (!session || location.pathname !== '/strava') return
+    const p = new URLSearchParams(location.search)
+    history.replaceState(null, '', '/')
+    const expected = sessionStorage.getItem('strava_state')
+    sessionStorage.removeItem('strava_state')
+    const code = p.get('code')
+    if (!expected || p.get('state') !== expected) return setMsg('Estado OAuth inválido, vuelve a conectar')
+    if (!code) return setMsg('Acceso a Strava denegado')
+    if (!p.get('scope')?.split(',').includes('activity:read_all')) {
+      return setMsg('Hace falta el permiso de ver todas las actividades')
+    }
+    setMsg('Conectando Strava…')
+    supabase.functions
+      .invoke('strava-oauth', { body: { code } })
+      .then(({ data, error }) => setMsg(error ? `Error: ${error.message}` : `Strava conectado: ${data.athlete}`))
+  }, [session])
+
+  async function sendLink(e: FormEvent) {
+    e.preventDefault()
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: false, emailRedirectTo: location.origin },
+    })
+    setMsg(error ? `Error: ${error.message}` : 'Revisa tu correo')
+  }
+
+  if (!session) {
+    return (
+      <main>
+        <h1>UpStat</h1>
+        <form onSubmit={sendLink}>
+          <label>
+            Email <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          </label>
+          <button>Enviar enlace</button>
+        </form>
+        <p role="status">{msg}</p>
+      </main>
+    )
+  }
+
+  return (
+    <main>
+      <h1>UpStat</h1>
+      <p>{session.user.email}</p>
+      <button onClick={connectStrava}>Conectar Strava</button>
+      <button onClick={() => supabase.auth.signOut()}>Salir</button>
+      <p role="status">{msg}</p>
+    </main>
+  )
+}
