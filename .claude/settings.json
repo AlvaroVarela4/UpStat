@@ -7,7 +7,22 @@
     ],
     "ask": [
       "Bash(supabase db push:*)",
-      "Bash(supabase db reset:*)"
+      "Bash(supabase db reset:*)",
+      "Bash(npx supabase db push:*)",
+      "Bash(npx supabase db reset:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && { npx tsc -b && npx oxlint --quiet; } >&2 || exit 2"
+          }
+        ]
+      }
     ]
   }
 }

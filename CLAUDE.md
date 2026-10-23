@@ -40,9 +40,9 @@ Uso personal, no multiusuario. Idioma de la UI: español. Zona horaria: Europe/M
 - Vigilar el tamaño de las tablas `raw_*`; purgarlas o compactarlas si crecen.
 
 ## Modelo de datos (orientativo)
-- `integrations`: proveedor, tokens, `expires_at`, `last_sync_at`, cursor de backfill
-- `raw_strava_activities`, `raw_health_payloads`, `raw_playtomic`: respuesta original (`jsonb`) + `source_id` + `fetched_at`. Sirven para reprocesar si cambia el modelo.
-- `activities` (tabla unificada): `id`, `source` (`strava`|`apple_health`|`playtomic`), `source_id`, `sport_type`, `start_at` (timestamptz), `duration_s`, `distance_m`, `avg_hr`, `max_hr`, `calories`, `elevation_m`, `merged_into` (nullable)
+- `integrations` (creada): proveedor (PK), `user_id`, tokens, `expires_at`, `last_sync_at`, `backfill_cursor`. RLS sin políticas: solo `service_role` (Edge Functions) la lee; los tokens nunca llegan al cliente.
+- `activities` (creada, tabla unificada): `id`, `user_id`, `source` (`strava`|`apple_health`|`playtomic`), `source_id`, `sport_type`, `start_at` (timestamptz), `duration_s`, `distance_m`, `avg_hr`, `max_hr`, `calories`, `elevation_m`, `merged_into` (nullable), `raw` (jsonb). Cliente solo `select` de sus filas; escrituras solo desde Edge Functions.
+- Respuesta original de cada fuente en una columna `raw jsonb` de la propia tabla (no tablas `raw_*` separadas) para poder reprocesar. Separar a tablas `raw_*` solo si el tamaño lo exige.
 - `daily_health`: `date`, `steps`, `active_kcal`, `resting_hr`, `hrv_ms`, `sleep_min`, `vo2max`, … (una fila por día)
 - `padel_matches`: `played_at`, `club`, `partner`, `opponents`, `result`, `won`, `level_before`, `level_after`, `activity_id` (enlace a su entreno, si existe)
 - Upserts siempre idempotentes con `unique (source, source_id)`.
@@ -62,15 +62,28 @@ Un entreno del Apple Watch suele acabar **también en Strava**. Al unificar:
 - Cada integración en su propia Edge Function, con logs claros y sin que un fallo afecte a las demás.
 
 ## Orden de trabajo / roadmap
-1. Proyecto Supabase: esquema SQL, RLS y migraciones
-2. Strava: OAuth, backfill del histórico, webhook
-3. Apple Health: endpoint `health-ingest` + configuración de Health Auto Export; script de carga de `export.xml`
-4. Frontend Vite: dashboard (resumen semanal, actividades, tendencias de salud)
-5. Deduplicación entre Strava y Apple Health
-6. Playtomic: sync no oficial + entrada manual de partidos
+Por slices verticales (DB + función + UI de cada fuente), no por capas. Cada tabla se crea cuando la necesita su slice.
+1. ✅ Scaffold Vite + `supabase init`, proyecto enlazado
+2. ✅ Esquema mínimo: `integrations` + `activities` con RLS (migración aplicada en remoto)
+3. Strava: OAuth, backfill del histórico, lista simple en la UI
+4. Webhook de Strava
+5. Apple Health: `health-ingest` + `daily_health` + vista
+6. Deduplicación Strava / Apple Health (con datos reales de ambas)
+7. Pádel: entrada manual primero; sync no oficial de Playtomic solo si lo manual molesta
+- `export.xml` histórico: solo si hace falta el histórico previo a Health Auto Export
 
 ## Comandos
-<!-- Rellenar cuando exista el proyecto -->
+El CLI de Supabase es devDependency (no global): siempre `npx supabase ...`.
 - `npm run dev`: frontend local
-- `supabase start` / `supabase db push`: base de datos local y migraciones
-- `supabase functions deploy <nombre>`: desplegar una Edge Function
+- `npm run build` / `npm run lint`: typecheck + build / oxlint
+- `npx supabase start` / `stop`: stack local (requiere Docker arrancado)
+- `npx supabase migration new <nombre>`: nueva migración en `supabase/migrations/`
+- `npx supabase db reset`: reaplica migraciones en local. Probar ahí (incl. RLS con `set role authenticated` + `request.jwt.claims`) antes de `npx supabase db push --linked` a remoto
+- `npx supabase functions deploy <nombre>`: desplegar una Edge Function
+- Proyecto remoto enlazado: ref `jjcqmsoombbrzpeftgww`
+
+## Configuración de Claude Code (`.claude/settings.json`)
+- `deny` lectura de cualquier `.env*`: los secretos los rellena el usuario.
+- `ask` antes de `db push` / `db reset` (con y sin `npx`).
+- Hook `PostToolUse` tras cada Edit/Write: `tsc -b` + `oxlint --quiet`; si fallan, el error vuelve a Claude.
+- Sin `rules/`, `skills/`, `agents/`, `commands/` ni `.mcp.json` a propósito: añadir solo cuando haya una necesidad real (CLAUDE.md > ~200 líneas, flujo repetido, MCP con ref de proyecto).
