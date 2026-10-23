@@ -2,6 +2,14 @@ import { useEffect, useState, type FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 
+type Activity = {
+  id: number
+  sport_type: string
+  start_at: string
+  duration_s: number | null
+  distance_m: number | null
+}
+
 // Strava solo valida el dominio del redirect; la ruta /strava separa su ?code= del de Supabase Auth.
 const STRAVA_REDIRECT = `${location.origin}/strava`
 
@@ -24,12 +32,47 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [email, setEmail] = useState('')
   const [msg, setMsg] = useState('')
+  const [activities, setActivities] = useState<Activity[]>([])
+
+  async function loadActivities() {
+    const { data, error } = await supabase
+      .from('activities')
+      .select('id, sport_type, start_at, duration_s, distance_m')
+      .order('start_at', { ascending: false })
+      .limit(50)
+    if (error) setMsg(`Error: ${error.message}`)
+    else setActivities(data)
+  }
+
+  // Repite strava-sync hasta que no queden actividades (cada llamada trae ~1000 como máximo).
+  async function syncStrava() {
+    let total = 0
+    for (;;) {
+      setMsg(`Sincronizando Strava… ${total} actividades`)
+      const { data, error } = await supabase.functions.invoke('strava-sync')
+      if (error) return setMsg(`Error: ${error.message}`)
+      total += data.imported
+      if (data.rateLimited) {
+        setMsg(`${total} actividades. Límite de Strava alcanzado, vuelve a sincronizar en 15 min`)
+        break
+      }
+      if (data.done) {
+        setMsg(`Sincronizado: ${total} actividades nuevas`)
+        break
+      }
+    }
+    loadActivities()
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session))
     const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s))
     return () => data.subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (session) loadActivities()
+  }, [session])
 
   // Vuelta de Strava: validar state y scope, y canjear el code en la Edge Function.
   useEffect(() => {
@@ -79,8 +122,24 @@ export default function App() {
       <h1>UpStat</h1>
       <p>{session.user.email}</p>
       <button onClick={connectStrava}>Conectar Strava</button>
+      <button onClick={syncStrava}>Sincronizar Strava</button>
       <button onClick={() => supabase.auth.signOut()}>Salir</button>
       <p role="status">{msg}</p>
+      <table>
+        <thead>
+          <tr><th>Fecha</th><th>Deporte</th><th>Distancia</th><th>Duración</th></tr>
+        </thead>
+        <tbody>
+          {activities.map((a) => (
+            <tr key={a.id}>
+              <td>{new Date(a.start_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid', dateStyle: 'medium', timeStyle: 'short' })}</td>
+              <td>{a.sport_type}</td>
+              <td>{a.distance_m ? `${(a.distance_m / 1000).toFixed(2)} km` : '—'}</td>
+              <td>{a.duration_s ? `${Math.floor(a.duration_s / 3600)}h ${Math.floor((a.duration_s % 3600) / 60)}min` : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </main>
   )
 }
