@@ -10,6 +10,15 @@ type Activity = {
   distance_m: number | null
 }
 
+type Day = {
+  date: string
+  steps: number | null
+  active_kcal: number | null
+  resting_hr: number | null
+  hrv_ms: number | null
+  sleep_min: number | null
+}
+
 // Strava solo valida el dominio del redirect; la ruta /strava separa su ?code= del de Supabase Auth.
 const STRAVA_REDIRECT = `${location.origin}/strava`
 
@@ -33,6 +42,7 @@ export default function App() {
   const [email, setEmail] = useState('')
   const [msg, setMsg] = useState('')
   const [activities, setActivities] = useState<Activity[]>([])
+  const [days, setDays] = useState<Day[]>([])
 
   async function loadActivities() {
     const { data, error } = await supabase
@@ -42,6 +52,13 @@ export default function App() {
       .limit(50)
     if (error) setMsg(`Error: ${error.message}`)
     else setActivities(data)
+    const health = await supabase
+      .from('daily_health')
+      .select('date, steps, active_kcal, resting_hr, hrv_ms, sleep_min')
+      .order('date', { ascending: false })
+      .limit(14)
+    if (health.error) setMsg(`Error: ${health.error.message}`)
+    else setDays(health.data)
   }
 
   // Repite strava-sync hasta que no queden actividades (cada llamada trae ~1000 como máximo).
@@ -125,6 +142,25 @@ export default function App() {
       <button onClick={syncStrava}>Sincronizar Strava</button>
       <button onClick={() => supabase.auth.signOut()}>Salir</button>
       <p role="status">{msg}</p>
+      <h2>Salud</h2>
+      <table>
+        <thead>
+          <tr><th>Día</th><th>Pasos</th><th>kcal activas</th><th>FC reposo</th><th>VFC</th><th>Sueño</th></tr>
+        </thead>
+        <tbody>
+          {days.map((d) => (
+            <tr key={d.date}>
+              <td>{new Date(d.date).toLocaleDateString('es-ES', { timeZone: 'UTC', dateStyle: 'medium' })}</td>
+              <td>{d.steps ?? '—'}</td>
+              <td>{d.active_kcal == null ? '—' : Math.round(d.active_kcal)}</td>
+              <td>{d.resting_hr ?? '—'}</td>
+              <td>{d.hrv_ms == null ? '—' : `${Math.round(d.hrv_ms)} ms`}</td>
+              <td>{d.sleep_min == null ? '—' : `${Math.floor(d.sleep_min / 60)}h ${d.sleep_min % 60}min`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h2>Actividades</h2>
       <table>
         <thead>
           <tr><th>Fecha</th><th>Deporte</th><th>Distancia</th><th>Duración</th></tr>

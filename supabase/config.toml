@@ -442,3 +442,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/strava-webhook/deno.json"
 entrypoint = "./functions/strava-webhook/index.ts"
+
+[functions.health-ingest]
+enabled = true
+verify_jwt = false
+import_map = "./functions/health-ingest/deno.json"
+entrypoint = "./functions/health-ingest/index.ts"
