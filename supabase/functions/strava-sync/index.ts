@@ -1,60 +1,28 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
+import { getStravaToken, type StravaActivity, toActivityRow } from "../_shared/strava.ts";
 
 // Importa actividades de Strava posteriores a `backfill_cursor` (epoch del último start_date importado).
 // Sirve para el backfill y para la sincronización incremental. Cada llamada hace como máximo
 // MAX_PAGES peticiones; el cliente repite hasta `done` para respetar el límite de Strava.
+// Auth: usuario (botón de la UI) o secret key (`pg_cron` diario, ver migración strava_sync_cron).
 const MAX_PAGES = 5;
 const PER_PAGE = 200;
 
-type StravaActivity = {
-  id: number;
-  sport_type?: string;
-  type: string;
-  start_date: string;
-  moving_time: number;
-  distance: number;
-  total_elevation_gain: number;
-  average_heartrate?: number;
-  max_heartrate?: number;
-};
-
-const round = (n?: number) => (n == null ? null : Math.round(n));
-
 export default {
-  fetch: withSupabase({ auth: "user" }, async (_req, ctx) => {
+  fetch: withSupabase({ auth: ["user", "secret"] }, async (_req, ctx) => {
     const db = ctx.supabaseAdmin;
-    const userId = ctx.userClaims!.id;
 
-    const { data: integ, error } = await db.from("integrations")
-      .select("access_token, refresh_token, expires_at, backfill_cursor")
-      .eq("provider", "strava").eq("user_id", userId).maybeSingle();
-    if (error) return fail("integrations read failed", error, 500);
-    if (!integ) return Response.json({ error: "strava not connected" }, { status: 404 });
-
-    let token = integ.access_token;
-    if (new Date(integ.expires_at).getTime() < Date.now() + 60_000) {
-      const res = await fetch("https://www.strava.com/oauth/token", {
-        method: "POST",
-        body: new URLSearchParams({
-          client_id: Deno.env.get("STRAVA_CLIENT_ID")!,
-          client_secret: Deno.env.get("STRAVA_CLIENT_SECRET")!,
-          grant_type: "refresh_token",
-          refresh_token: integ.refresh_token,
-        }),
-      });
-      if (!res.ok) return fail("token refresh failed", await res.text(), 502);
-      const t = await res.json();
-      token = t.access_token;
-      const { error } = await db.from("integrations").update({
-        access_token: t.access_token,
-        refresh_token: t.refresh_token,
-        expires_at: new Date(t.expires_at * 1000).toISOString(),
-      }).eq("provider", "strava");
-      if (error) return fail("token save failed", error, 500);
+    let strava;
+    try {
+      strava = await getStravaToken(db);
+    } catch (e) {
+      const msg = (e as Error).message;
+      return fail(msg, e, msg === "strava not connected" ? 404 : 502);
     }
+    const { token, userId } = strava;
 
-    let cursor = Number(integ.backfill_cursor ?? 0);
+    let cursor = Number(strava.cursor ?? 0);
     let imported = 0;
     for (let page = 0; page < MAX_PAGES; page++) {
       const res = await fetch(
@@ -72,19 +40,7 @@ export default {
 
       if (batch.length) {
         const { error } = await db.from("activities").upsert(
-          batch.map((a) => ({
-            user_id: userId,
-            source: "strava",
-            source_id: String(a.id),
-            sport_type: a.sport_type ?? a.type,
-            start_at: a.start_date,
-            duration_s: a.moving_time,
-            distance_m: a.distance,
-            elevation_m: a.total_elevation_gain,
-            avg_hr: round(a.average_heartrate),
-            max_hr: round(a.max_heartrate),
-            raw: a,
-          })),
+          batch.map((a) => toActivityRow(a, userId)),
           { onConflict: "source,source_id" },
         );
         if (error) return fail("activities upsert failed", error, 500);

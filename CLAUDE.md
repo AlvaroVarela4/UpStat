@@ -65,8 +65,8 @@ Un entreno del Apple Watch suele acabar **también en Strava**. Al unificar:
 Por slices verticales (DB + función + UI de cada fuente), no por capas. Cada tabla se crea cuando la necesita su slice.
 1. ✅ Scaffold Vite + `supabase init`, proyecto enlazado
 2. ✅ Esquema mínimo: `integrations` + `activities` con RLS (migración aplicada en remoto)
-3. Strava: OAuth, backfill del histórico, lista simple en la UI
-4. Webhook de Strava
+3. ✅ Strava: OAuth, backfill del histórico, lista simple en la UI
+4. ✅ Webhook de Strava + sync diario con `pg_cron`
 5. Apple Health: `health-ingest` + `daily_health` + vista
 6. Deduplicación Strava / Apple Health (con datos reales de ambas)
 7. Pádel: entrada manual primero; sync no oficial de Playtomic solo si lo manual molesta
